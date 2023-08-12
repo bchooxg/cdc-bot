@@ -3,6 +3,7 @@ import os
 import re
 import sys
 import time
+import copy
 from typing import Dict, Union
 
 from selenium import webdriver
@@ -123,6 +124,7 @@ class handler(CDCAbstract):
         return return_sessions_data
 
     def check_if_same_sessions(self, session0: Dict, session1: Dict):
+        self.log.debug(f"Checking if {session0} is the same as {session1}")
         for date_str, time_slots in session0.items():
             if date_str not in session1:
                 return True
@@ -603,8 +605,10 @@ class handler(CDCAbstract):
 
     def create_notification_update(self, field_type: str):
         earlier_sessions = self.get_attribute_with_fieldtype("earlier_sessions", field_type)
+        available_sessions = self.get_attribute_with_fieldtype("available_sessions", field_type)
         booked_sessions = self.get_attribute_with_fieldtype("booked_sessions", field_type)
         reserved_sessions = self.get_attribute_with_fieldtype("reserved_sessions", field_type)
+        filtered_sessions = self.get_attribute_with_fieldtype("filtered_sessions", field_type)
 
         notif_msg = ""
 
@@ -615,7 +619,8 @@ class handler(CDCAbstract):
         notif_msg += "--------------------------\n"
         notif_msg += "Booked sessions:\n"
         for booked_date_str, booked_time_slots in booked_sessions.items():
-            notif_msg += f"{booked_date_str}:\n"
+            day = convert_to_datetime(booked_date_str).strftime("%A")
+            notif_msg += f"{booked_date_str} ({day}):\n"
             for time_slot in booked_time_slots:
                 notif_msg += f"  -> {time_slot}\n"
         notif_msg += "--------------------------\n"
@@ -623,19 +628,30 @@ class handler(CDCAbstract):
         notif_msg += "--------------------------\n"
         notif_msg += "Reserved sessions:\n"
         for reserved_date_str, reserved_time_slots in reserved_sessions.items():
-            notif_msg += f"{reserved_date_str}:\n"
+            day = convert_to_datetime(reserved_date_str).strftime("%A")
+            notif_msg += f"{reserved_date_str} ({day}):\n"
             for time_slot in reserved_time_slots:
                 self.has_slots_reserved = True
                 notif_msg += f"  -> {time_slot}\n"
         notif_msg += "--------------------------\n\n"
 
         notif_msg += "Available sessions:\n"
-        for earlier_date_str, earlier_time_slots in earlier_sessions.items():
-            notif_msg += f"{earlier_date_str}:\n"
+        for earlier_date_str, earlier_time_slots in available_sessions.items():
+            # Processing Date String to get Day of week
+            day = convert_to_datetime(earlier_date_str).strftime("%A")
+            notif_msg += f"{earlier_date_str} ({day}):\n"
             for time_slot in earlier_time_slots:
                 notif_msg += f"  -> {time_slot}\n"
             notif_msg += "\n"
         notif_msg += "\n"
+        if self.program_config['filter_dates']:
+            notif_msg += "--------------------------\n"
+            notif_msg += "Filtered sessions:\n"
+            for filtered_date_str, filtered_time_slots in filtered_sessions.items():
+                day = convert_to_datetime(filtered_date_str).strftime("%A")
+                notif_msg += f"{filtered_date_str} ({day}):\n"
+                for time_slot in filtered_time_slots:
+                    notif_msg += f"  -> {time_slot}\n"
 
         self.notification_update_msg += notif_msg
 
@@ -678,23 +694,92 @@ class handler(CDCAbstract):
                 )
         self.reset_state()
 
-    def check_if_earlier_available_sessions(self, field_type: str):
-        self.update_earlier_sessions(field_type)
+    def filter_slots(self, sessions: dict) -> dict:
+        # Get Config
+        weekday_slots = self.program_config["weekdays"]
+        weekend_slots = self.program_config["weekends"]
+        exclusions = self.program_config["exclude"]
+        # self.log.info(f"Exclusions: {exclusions}")
+        # self.log.info(f"Weekday slots: {weekday_slots}")
+        # self.log.info(f"Weekend slots: {weekend_slots}")
+        slot_mapping = {
+            "08:30 - 10:10": 'slot1',
+            "10:20 - 12:00": 'slot2',
+            "12:45 - 14:25": 'slot3',
+            "14:35 - 16:15": 'slot4',
+            "16:25 - 18:05": 'slot5',
+            "18:50 - 20:30": 'slot6',
+            "20:40 - 22:20": 'slot7'
+        }
 
+        # Filter by weekday/weekend
+        for date in list(sessions):
+            if date in exclusions and exclusions[date] == "all":
+                self.log.info(f"Excluding {date} due to exclusion config {exclusions[date]}")
+                sessions.pop(date)
+                continue
+
+            is_weekend = convert_to_datetime(date).weekday() > 4
+
+            self.log.info(f"Date {date} is weekend: {is_weekend}")
+
+            for timeslot in sessions[date].copy():
+                # Convert Time to slot number
+                slot_no = slot_mapping[timeslot]
+                self.log.info(f"Date {date} timeslot {timeslot} is slot {slot_no}")
+
+
+                if date in exclusions and exclusions[date] == slot_no:
+                    self.log.info(f"Excluding {date} {timeslot} due to exclusion config {exclusions[date]}")
+                    sessions[date].remove(timeslot)
+                    continue
+
+                if is_weekend and not weekend_slots[slot_no]:
+                    self.log.info(f"Excluding {date} {timeslot} due to weekend config {weekend_slots[slot_no]}")
+                    sessions[date].remove(timeslot)
+                elif not is_weekend and not weekday_slots[slot_no]:
+                    self.log.info(f"Excluding {date} {timeslot} due to weekday config {weekday_slots[slot_no]}")
+                    sessions[date].remove(timeslot)
+
+        # Remove dates with no slots after filtering
+        for date in sessions.copy():
+            if len(sessions[date]) == 0:
+                sessions.pop(date)
+
+
+
+        # Return filtered slots
+        return sessions
+
+    def check_if_earlier_available_sessions(self, field_type: str):
+        self.log.debug("Inside check_if_earlier_available_sessions")
+
+        self.update_earlier_sessions(field_type)
         available_sessions = self.get_attribute_with_fieldtype("available_sessions", field_type)
         web_elements_in_view = self.get_attribute_with_fieldtype("web_elements_in_view", field_type)
 
         earlier_sessions = self.get_attribute_with_fieldtype("earlier_sessions", field_type)
         reserved_sessions = self.get_attribute_with_fieldtype("reserved_sessions", field_type)
+        filtered_sessions = copy.deepcopy(available_sessions) if self.program_config['filter_dates'] else None
 
-        if not self.check_if_same_sessions(self.get_attribute_with_fieldtype("cached_earlier_sessions", field_type),
-                                           earlier_sessions):
-            return False
+        # if not self.check_if_same_sessions(self.get_attribute_with_fieldtype("cached_earlier_sessions", field_type),
+        #                                    earlier_sessions):
+        #     return False
 
         number_of_slots_needed = self.program_config["slots_per_type"][field_type]
+        self.log.debug(f"Number of slots needed: {number_of_slots_needed}")
         if self.auto_reserve and number_of_slots_needed > 0:
-            earliest_sessions_to_be_reserved = self.get_earliest_time_slots(earlier_sessions, number_of_slots_needed,
-                                                                            field_type)
+            self.log.debug(f"Available sessions before filtering: {filtered_sessions}")
+            earliest_sessions_to_be_reserved = None
+            if self.program_config['filter_dates']:
+                self.filter_slots(filtered_sessions)
+                self.log.debug(f"Filtered sessions after filtering: {filtered_sessions}")
+                self.log.debug(f"Available sessions after filtering: {available_sessions}")
+                earliest_sessions_to_be_reserved = self.get_earliest_time_slots(filtered_sessions, number_of_slots_needed,
+                                                                                field_type)
+            else:
+                earliest_sessions_to_be_reserved = self.get_earliest_time_slots(earlier_sessions, number_of_slots_needed,
+                                                                                field_type)
             to_be_removed_reservations = {}
 
             for reserved_date_str, reserved_time_slots in reserved_sessions.items():
@@ -743,6 +828,11 @@ class handler(CDCAbstract):
                 self.log.info(f"Number of slots to reserve for {field_type.upper()} is: {number_of_slots_needed}")
                 earliest_sessions_to_be_reserved = self.get_earliest_time_slots(earlier_sessions,
                                                                                 number_of_slots_needed, field_type)
+                if self.program_config['filter_dates']:
+                    earliest_sessions_to_be_reserved = self.get_earliest_time_slots(filtered_sessions,
+                                                                                    number_of_slots_needed,
+                                                                                    field_type)
+
 
                 for date_str, time_slots in earliest_sessions_to_be_reserved.items():
                     for time_slot in time_slots:
@@ -775,7 +865,7 @@ class handler(CDCAbstract):
                             del available_sessions[date_str]
                         continue
                     break  # only executed if there is an alert
-
+        self.set_attribute_with_fieldtype("filtered_sessions", field_type, dict(filtered_sessions))
         self.set_attribute_with_fieldtype("reserved_sessions", field_type, dict(reserved_sessions))
         self.set_attribute_with_fieldtype("available_sessions", field_type, dict(available_sessions))
         self.update_earlier_sessions(field_type)

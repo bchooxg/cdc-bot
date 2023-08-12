@@ -1,5 +1,5 @@
 requests
-selenium 
+selenium == 3.13.0
 pyyaml
 python-telegram-bot
 2captcha-python

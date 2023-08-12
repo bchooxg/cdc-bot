@@ -116,3 +116,9 @@ Run the program from the working directory `cdc-bot` so that the directories are
 ```bash
 $ python src/main.py
 ```
+
+
+# Todos
+    1. Add support for slot selections
+    2. Bypass cloudflare or hCaptcha
+    3. Add check for slots at least 48 hours apart 

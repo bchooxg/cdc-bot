@@ -2,6 +2,7 @@ import datetime
 import os
 import sys
 import time
+import traceback
 
 sys.path.insert(0, os.getcwd())
 
@@ -85,6 +86,7 @@ if __name__ == "__main__":
                 log.info("Program stopped by user.")
             except Exception as e:
                 log.error(f"Program encountered an error: {e}")
+                log.error(traceback.format_exc())
                 notification_manager.send_notification_all(title="", msg=f"Program encountered an error: {e}")
             finally:
                 cdc_handler.account_logout()
